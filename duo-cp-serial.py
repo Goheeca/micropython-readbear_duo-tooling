@@ -327,7 +327,7 @@ def main(argv):
         #with Sync(LogSerialWrapper(ser), TIMEOUT) as sync:
         with Sync(ser, TIMEOUT) as sync:
             remote = Remote(sync)            
-            print('REMOTE:'+remote.stat)
+            print('REMOTE:'+str(remote.stat))
             if argv[1][0] == 'u':
                 remote.upload(argv[2], argv[3], only_diffs=True)
             else:
