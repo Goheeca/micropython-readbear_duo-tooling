@@ -33,16 +33,16 @@ class LogSerialWrapper(object):
 
     def __setattr__(self, name, value):
         if name == 'serial':
-            super().__setattr__(name, value)    
+            super().__setattr__(name, value)
         else:
             super().__getattribute__('serial').__setattr__(name, value)
-        
+
     #def __getattribute__(self, name):
     #    if name not in ['write', 'read', 'read_until', 'readall']:
     #        return super().__getattribute__('serial').__getattribute__(name)
     #    else:
     #        super().__getattribute__(name)
-        
+
 
 class DuoRepl(object):
     INTERRUPT = '\x03'
@@ -126,7 +126,7 @@ class Sync(DuoRepl):
             content = None
         res = self.result(self.read_until())
         return (content, res)
-        
+
     def perform(self, command, arg=None, data=None):
         action = command + (' ' + arg if arg else '')
         result = self.do(action, data=data)
@@ -136,14 +136,16 @@ class Sync(DuoRepl):
 
 def checksum(path=None, content=None):
     if content is not None:
-        return binascii.crc32(content.encode())
+        if isinstance(content, str):
+            content = content.encode()
+        return binascii.crc32(content)
     if os.path.isfile(path):
-        with open(path, 'r') as f:
+        with open(path, 'rb') as f:
             content = f.read()
-            return binascii.crc32(content.encode())
+            return binascii.crc32(content)
     else:
         return None
-    
+
 
 def remove(path):
     if os.path.isfile(path):
@@ -176,7 +178,7 @@ def create(path, dir=True):
 
 def exists(path):
     return os.path.isfile(path) or os.path.isdir(path)
-    
+
 def deduplicate(listing):
     return set(filter(lambda file: file+'/' not in listing, listing))
 
@@ -186,12 +188,12 @@ class Remote(object):
     def __init__(self, sync):
         self.sync = sync
         self._stat()
-        
+
     def path_join(self, a, b):
-        return os.path.join(a, b).replace('\\', '/')        
-        
+        return os.path.join(a, b).replace('\\', '/')
+
     def _stat(self):
-        self.stat = json.loads(self.sync.perform('INFO', '/'))       
+        self.stat = json.loads(self.sync.perform('INFO', '/'))
 
     def is_file(self, path):
         try:
@@ -203,7 +205,7 @@ class Remote(object):
         try:
             return isinstance(json.loads(self.sync.perform('INFO', path)), dict)
         except RuntimeError:
-            return False 
+            return False
 
     def create(self, path, dir=True):
         if dir:
@@ -222,29 +224,31 @@ class Remote(object):
             self.sync.perform('CREATE', path)
 
     def listdir(self, path):
-        return list({file for file, _ in json.loads(self.sync.perform('INFO', path)).items()}) 
+        return list({file for file, _ in json.loads(self.sync.perform('INFO', path)).items()})
 
     def checksum(self, path):
         try:
             return json.loads(self.sync.perform('INFO', path))[1]
         except RuntimeError:
             return None
-            
+
     def exists(self, path):
         return self.is_file(path) or self.is_dir(path)
-            
+
     def remove(self, path):
         if self.is_dir(path):
             for file in self.listdir(path):
                 self.remove(self.path_join(path, file))
-        self.sync.perform('REMOVE', path)            
+        self.sync.perform('REMOVE', path)
         self._stat()
 
-    def upload_file(self, path, content, binary=False):
+    def upload_file(self, path, content):
         print(f'... -> REMOTE:{path}')
-        if binary:
-            content = binascii.b2a_base64(content.encode()).decode()
-        prefix = 'BIN' if binary else ''
+        prefix = 'BIN'
+        if isinstance(content, str):
+            prefix = ''
+        else:
+            content = binascii.b2a_base64(content).decode()
         if Remote.UPLOAD_BLOCK:
             first = True
             for block in (content[i:i+Remote.UPLOAD_BLOCK] for i in range(0, len(content), Remote.UPLOAD_BLOCK)):
@@ -257,7 +261,7 @@ class Remote(object):
         print(f'REMOTE:{path} -> ...')
         content = self.sync.perform('BINSHOW' if binary else 'SHOW', path)
         if binary:
-            content = binascii.a2b_base64(content.encode()).decode()
+            content = binascii.a2b_base64(content)
         return content
 
 
@@ -279,16 +283,16 @@ class Remote(object):
             for file in deduplicate(set.union(files, remote_files)):
                 self.upload(os.path.join(src_path, file), self.path_join(dst_path, file), binary, only_diffs)
         elif os.path.isfile(src_path):
-            with open(src_path, 'r') as f:
+            with open(src_path, 'rb' if binary else 'r') as f:
                 content = f.read()
                 if not only_diffs or checksum(content=content) != self.checksum(dst_path):
-                    self.upload_file(dst_path, content, binary)
+                    self.upload_file(dst_path, content)
         else:
             raise RuntimeError(src_path + ' -> REMOTE:' + dst_path)
 
     def download(self, src_path, dst_path, binary=True, only_diffs=False):
         src_exists = self.exists(src_path)
-        dst_exists = exists(dst_path)  
+        dst_exists = exists(dst_path)
         print(f'REMOTE:{src_path}[{src_exists}] -> {dst_path}[{dst_exists}]')
         same_type = src_exists != dst_exists or (self.is_dir(src_path) if src_exists else None) == (os.path.isdir(dst_path) if dst_exists else None)
         if not src_exists or not same_type:
@@ -297,7 +301,7 @@ class Remote(object):
             create(dst_path, dir=self.is_dir(src_path))
         if not src_exists:
             return
-        
+
         if self.is_dir(src_path):
             remote_files = set(self.listdir(src_path))
             files = set(os.listdir(dst_path))
@@ -306,7 +310,7 @@ class Remote(object):
         elif self.is_file(src_path):
             if not only_diffs or checksum(dst_path) != self.checksum(src_path):
                 content = self.download_file(src_path, binary)
-                with open(dst_path, 'w') as f:
+                with open(dst_path, 'wb' if binary else 'w') as f:
                     f.write(content)
         else:
             raise RuntimeError('REMOTE:' + src_path + ' -> ' + dst_path)
@@ -322,11 +326,11 @@ def main(argv):
     if len(argv) < 4 and (not argv[1].startswith('u') or not argv[1].startswith('d')):
         print('Required arguments: (upload | download) source destination')
         sys.exit('')
-        
+
     with serial.Serial(argv[0], BAUD) as ser:
         #with Sync(LogSerialWrapper(ser), TIMEOUT) as sync:
         with Sync(ser, TIMEOUT) as sync:
-            remote = Remote(sync)            
+            remote = Remote(sync)
             print('REMOTE:'+str(remote.stat))
             if argv[1][0] == 'u':
                 remote.upload(argv[2], argv[3], only_diffs=True)
